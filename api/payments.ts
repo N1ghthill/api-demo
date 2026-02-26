@@ -679,15 +679,19 @@ async function paymentsHandler(ctx: ApiHandlerContext): Promise<void> {
     return;
   }
 
-  let lead: LeadRow | null = null;
-  try {
-    lead = await loadLeadById(leadId);
-  } catch (error) {
-    log.error({ error: sanitizeError(error) }, "lead_fetch_failed");
-    fail(500, "lead_fetch_failed", "Failed to load lead for payment.");
-    return;
-  }
+  const leadLookup = await (async () => {
+    try {
+      return { failed: false as const, lead: await loadLeadById(leadId) };
+    } catch (error) {
+      log.error({ error: sanitizeError(error) }, "lead_fetch_failed");
+      fail(500, "lead_fetch_failed", "Failed to load lead for payment.");
+      return { failed: true as const, lead: null };
+    }
+  })();
 
+  if (leadLookup.failed) return;
+
+  const lead = leadLookup.lead;
   if (!lead) {
     fail(400, "invalid_lead", "Lead not found.");
     return;
@@ -811,23 +815,27 @@ async function paymentsHandler(ctx: ApiHandlerContext): Promise<void> {
     return;
   }
 
-  let course: CourseRow | null = null;
-  try {
-    const { rows } = await query<CourseRow>(
-      `select id, slug, name, price_cents
-         from courses
-        where id = $1
-          and slug = $2
-        limit 1`,
-      [lead.course_id, courseSlug]
-    );
-    course = rows?.[0] ?? null;
-  } catch (error) {
-    log.error({ error: sanitizeError(error) }, "courses_fetch_failed");
-    fail(500, "courses_fetch_failed", "Failed to load course for payment.");
-    return;
-  }
+  const courseLookup = await (async () => {
+    try {
+      const { rows } = await query<CourseRow>(
+        `select id, slug, name, price_cents
+           from courses
+          where id = $1
+            and slug = $2
+          limit 1`,
+        [lead.course_id, courseSlug]
+      );
+      return { failed: false as const, course: rows?.[0] ?? null };
+    } catch (error) {
+      log.error({ error: sanitizeError(error) }, "courses_fetch_failed");
+      fail(500, "courses_fetch_failed", "Failed to load course for payment.");
+      return { failed: true as const, course: null };
+    }
+  })();
 
+  if (courseLookup.failed) return;
+
+  const course = courseLookup.course;
   if (!course) {
     fail(400, "unknown_course", "Unknown course.");
     return;
@@ -869,7 +877,7 @@ async function paymentsHandler(ctx: ApiHandlerContext): Promise<void> {
   const reference = explicitReference || buildReferenceFromIdempotencyKey(course.slug, idempotencyKey);
   const sourceUrl = sanitizeString(body.source_url ?? body.sourceUrl ?? req.headers.referer, 500);
 
-  let idempotencyPersisted = true;
+  let idempotencyPersisted: boolean;
   try {
     let idempotencyLookup = await loadCheckoutByIdempotencyKey(idempotencyKey);
     idempotencyPersisted = idempotencyLookup.available;
@@ -951,7 +959,7 @@ async function paymentsHandler(ctx: ApiHandlerContext): Promise<void> {
     }
   }
 
-  let checkoutId: string | null = null;
+  let checkoutId: string | null;
   try {
     const insertOutcome = await insertProcessingCheckout(
       {
@@ -1011,7 +1019,7 @@ async function paymentsHandler(ctx: ApiHandlerContext): Promise<void> {
     return;
   }
 
-  let providerResult: Awaited<ReturnType<typeof createRedeCreditTransaction>> | null = null;
+  let providerResult: Awaited<ReturnType<typeof createRedeCreditTransaction>>;
   try {
     const providerPayload = {
       amount: amountCents,
