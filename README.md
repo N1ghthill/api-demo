@@ -73,6 +73,7 @@ npm run check
 ```
 
 `npm run check` executa typecheck + testes.
+No GitHub Actions, o workflow CI também executa smoke test com Docker (`db + API`).
 
 ## OpenAPI
 

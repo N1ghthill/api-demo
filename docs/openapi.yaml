@@ -9,18 +9,22 @@ info:
     name: MIT
     url: https://opensource.org/licenses/MIT
 servers:
-  - url: http://localhost:3000
-    description: Local
-  - url: https://api-demo.example.com
-    description: Example production URL
+  - url: https://api-demo.vercel.app
+    description: Production
+  - url: https://staging.api-demo.vercel.app
+    description: Staging
 
 security: []
 
 tags:
   - name: Health
+    description: Service availability and liveness endpoints.
   - name: Courses
+    description: Public catalog listing endpoints.
   - name: Leads
+    description: Lead enrollment creation and internal lead lookup.
   - name: Payments
+    description: Idempotent checkout and payment lifecycle endpoints.
 
 paths:
   /api/health:
