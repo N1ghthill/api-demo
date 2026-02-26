@@ -521,19 +521,23 @@ async function leadsHandler(ctx: ApiHandlerContext): Promise<void> {
     return;
   }
 
-  let course: { id: string; slug: string; name: string; price_cents: number } | null = null;
-  try {
-    const { rows } = await query<{ id: string; slug: string; name: string; price_cents: number }>(
-      "select id, slug, name, price_cents from courses where slug = $1 and active = true",
-      [courseSlug]
-    );
-    course = rows?.[0] || null;
-  } catch (error) {
-    log.error({ error: sanitizeError(error) }, "courses_fetch_failed");
-    fail(500, "courses_fetch_failed", "Failed to load selected course.");
-    return;
-  }
+  const courseLookup = await (async () => {
+    try {
+      const { rows } = await query<{ id: string; slug: string; name: string; price_cents: number }>(
+        "select id, slug, name, price_cents from courses where slug = $1 and active = true",
+        [courseSlug]
+      );
+      return { failed: false as const, course: rows?.[0] || null };
+    } catch (error) {
+      log.error({ error: sanitizeError(error) }, "courses_fetch_failed");
+      fail(500, "courses_fetch_failed", "Failed to load selected course.");
+      return { failed: true as const, course: null };
+    }
+  })();
 
+  if (courseLookup.failed) return;
+
+  const course = courseLookup.course;
   if (!course) {
     fail(400, "unknown_course", "Course does not exist or is inactive.");
     return;
