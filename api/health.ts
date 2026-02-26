@@ -1,10 +1,7 @@
-import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { cors } from "../lib/cors.js";
-import { applySecurityHeaders } from "../lib/http.js";
+import { withApiHandler, type ApiHandlerContext } from "../lib/apiHandler.js";
 
-export default function handler(req: VercelRequest, res: VercelResponse) {
-  applySecurityHeaders(req, res);
-  if (cors(req, res)) return;
-  res.setHeader("Cache-Control", "no-store");
+async function healthHandler({ res }: ApiHandlerContext): Promise<void> {
   res.status(200).json({ ok: true });
 }
+
+export default withApiHandler(healthHandler, { cacheControl: "no-store" });

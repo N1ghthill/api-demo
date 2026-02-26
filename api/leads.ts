@@ -1,9 +1,17 @@
 import { createHash, timingSafeEqual } from "crypto";
-import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { cors } from "../lib/cors.js";
+import { withApiHandler, type ApiHandlerContext } from "../lib/apiHandler.js";
 import { query } from "../lib/db.js";
-import { applySecurityHeaders } from "../lib/http.js";
-import { rateLimit } from "../lib/rateLimit.js";
+import { sanitizeError } from "../lib/logger.js";
+import {
+  isValidCpf,
+  isValidEmail,
+  normalizeCpf,
+  normalizeEmail,
+  normalizePhone,
+  normalizeUf,
+  onlyDigits,
+  sanitizeString
+} from "../lib/validators.js";
 
 type Address = {
   cep?: string;
@@ -55,73 +63,39 @@ const ALLOWED_PAYMENT_STATUS = new Set([
 const PROFESSIONAL_LINK_PROOF_TYPES = new Set(["ctps", "contrato_publico"]);
 const SHA256_HEX_REGEX = /^[0-9a-f]{64}$/;
 
-function onlyDigits(value: unknown): string {
-  return String(value ?? "").replace(/\D+/g, "");
-}
-
-function sanitizeString(value: unknown, maxLen = 240): string | null {
-  const str = String(value ?? "").trim();
-  if (!str) return null;
-  return str.length > maxLen ? str.slice(0, maxLen) : str;
-}
-
-function isValidPhone(value: unknown): boolean {
-  const digits = onlyDigits(value);
-  return digits.length >= 10 && digits.length <= 13;
-}
-
-function isValidCpf(value: unknown): boolean {
-  const cpf = onlyDigits(value);
-  if (cpf.length !== 11) return false;
-  if (/^(\d)\1+$/.test(cpf)) return false;
-
-  const calc = (base: string, factor: number): number => {
-    let sum = 0;
-    for (let i = 0; i < base.length; i++) {
-      sum += Number(base[i]) * (factor - i);
-    }
-    const mod = sum % 11;
-    return mod < 2 ? 0 : 11 - mod;
-  };
-
-  const d1 = calc(cpf.slice(0, 9), 10);
-  const d2 = calc(cpf.slice(0, 10), 11);
-  return cpf.endsWith(String(d1) + String(d2));
-}
-
 function isValidBirthDate(value: unknown): boolean {
   const str = String(value ?? "").trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(str)) return false;
+
   const date = new Date(str);
   if (Number.isNaN(date.getTime())) return false;
-  const now = new Date();
-  if (date > now) return false;
-  return true;
+
+  return date <= new Date();
 }
 
-function normalizeAddress(address: any): Address | null {
+function normalizeAddress(address: unknown): Address | null {
   if (!address || typeof address !== "object") return null;
+  const source = address as Record<string, unknown>;
 
-  const cepDigits = onlyDigits(address.cep);
+  const cepDigits = onlyDigits(source.cep);
   const cep = cepDigits ? (cepDigits.length === 8 ? cepDigits : null) : null;
+  const state = normalizeUf(source.state);
 
-  const state = sanitizeString(address.state, 2);
-  const normalizedState = state ? state.toUpperCase() : null;
-  if (normalizedState && !/^[A-Z]{2}$/.test(normalizedState)) {
+  if (source.state && !state) {
     return null;
   }
 
   const out: Address = {
     cep: cep || undefined,
-    street: sanitizeString(address.street, 160) || undefined,
-    number: sanitizeString(address.number, 40) || undefined,
-    complement: sanitizeString(address.complement, 120) || undefined,
-    neighborhood: sanitizeString(address.neighborhood, 120) || undefined,
-    city: sanitizeString(address.city, 120) || undefined,
-    state: normalizedState || undefined
+    street: sanitizeString(source.street, 160) || undefined,
+    number: sanitizeString(source.number, 40) || undefined,
+    complement: sanitizeString(source.complement, 120) || undefined,
+    neighborhood: sanitizeString(source.neighborhood, 120) || undefined,
+    city: sanitizeString(source.city, 120) || undefined,
+    state: state || undefined
   };
 
-  const hasAny = Object.values(out).some((v) => Boolean(v));
+  const hasAny = Object.values(out).some((value) => Boolean(value));
   return hasAny ? out : null;
 }
 
@@ -137,14 +111,16 @@ function hasRequiredAddressFields(address: Address | null): boolean {
   );
 }
 
-function normalizeExperienceCredit(value: any): { requested: boolean; note: string | null } {
+function normalizeExperienceCredit(value: unknown): { requested: boolean; note: string | null } {
   if (!value || typeof value !== "object") return { requested: false, note: null };
-  const requested = Boolean(value.requested);
-  const note = sanitizeString(value.note, 1200);
+
+  const source = value as Record<string, unknown>;
+  const requested = Boolean(source.requested);
+  const note = sanitizeString(source.note, 1200);
   return { requested, note: requested ? note : null };
 }
 
-function normalizeCourseRequirementsAck(value: any): CourseRequirementsAck {
+function normalizeCourseRequirementsAck(value: unknown): CourseRequirementsAck {
   if (!value || typeof value !== "object") {
     return {
       minimum_experience_two_years: false,
@@ -154,8 +130,9 @@ function normalizeCourseRequirementsAck(value: any): CourseRequirementsAck {
     };
   }
 
+  const source = value as Record<string, unknown>;
   const proofTypeRaw = sanitizeString(
-    value.professional_link_proof_type ?? value.professionalLinkProofType ?? value.proof_type,
+    source.professional_link_proof_type ?? source.professionalLinkProofType ?? source.proof_type,
     40
   );
   const proofTypeNormalized = proofTypeRaw ? proofTypeRaw.toLowerCase() : null;
@@ -166,13 +143,13 @@ function normalizeCourseRequirementsAck(value: any): CourseRequirementsAck {
 
   return {
     minimum_experience_two_years: Boolean(
-      value.minimum_experience_two_years ?? value.minimumExperienceTwoYears ?? value.minimum_years_ack
+      source.minimum_experience_two_years ?? source.minimumExperienceTwoYears ?? source.minimum_years_ack
     ),
     coren_active_two_years_auxiliar: Boolean(
-      value.coren_active_two_years_auxiliar ?? value.corenActiveTwoYearsAuxiliar ?? value.coren_ack
+      source.coren_active_two_years_auxiliar ?? source.corenActiveTwoYearsAuxiliar ?? source.coren_ack
     ),
     professional_link_proof: Boolean(
-      value.professional_link_proof ?? value.professionalLinkProof ?? value.formal_proof_ack
+      source.professional_link_proof ?? source.professionalLinkProof ?? source.formal_proof_ack
     ),
     professional_link_proof_type: proofType
   };
@@ -196,13 +173,15 @@ function validateCourseRequirements(courseSlug: string, ack: CourseRequirementsA
 
 function buildLeadCode(leadId: string | null | undefined): string {
   if (!leadId) return "";
+
   const normalized = String(leadId).replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
   if (!normalized) return "";
+
   return `MAT-${normalized.slice(0, 8)}`;
 }
 
-function getTokenFromRequest(req: VercelRequest): string | null {
-  const explicit = sanitizeString(req.headers["x-matriculator-token"], 240);
+function getTokenFromRequest(req: ApiHandlerContext["req"]): string | null {
+  const explicit = sanitizeString(req.headers["x-internal-token"] ?? req.headers["x-matriculator-token"], 240);
   if (explicit) return explicit;
 
   const authorization = sanitizeString(req.headers.authorization, 260);
@@ -210,6 +189,7 @@ function getTokenFromRequest(req: VercelRequest): string | null {
 
   const match = /^Bearer\s+(.+)$/i.exec(authorization);
   if (!match) return null;
+
   return sanitizeString(match[1], 240);
 }
 
@@ -228,7 +208,7 @@ function isValidSha256Hex(value: string): boolean {
   return SHA256_HEX_REGEX.test(value);
 }
 
-function isAuthorizedMatriculatorToken(providedToken: string | null): boolean {
+function isAuthorizedInternalToken(providedToken: string | null): boolean {
   if (!providedToken) return false;
 
   const configuredToken = String(process.env.MATRICULADOR_TOKEN || "").trim();
@@ -249,9 +229,11 @@ function isAuthorizedMatriculatorToken(providedToken: string | null): boolean {
 function normalizeLeadCodePrefix(value: unknown): string | null {
   const raw = String(value ?? "").toUpperCase().trim();
   if (!raw) return null;
+
   const withoutPrefix = raw.startsWith("MAT-") ? raw.slice(4) : raw;
   const normalized = withoutPrefix.replace(/[^A-Z0-9]/g, "").slice(0, 12);
   if (normalized.length < 6) return null;
+
   return normalized;
 }
 
@@ -259,6 +241,7 @@ function normalizePaymentStatus(value: unknown): string | null {
   const status = String(value ?? "")
     .trim()
     .toLowerCase();
+
   if (!status) return null;
   if (!ALLOWED_PAYMENT_STATUS.has(status)) return null;
   return status;
@@ -267,14 +250,15 @@ function normalizePaymentStatus(value: unknown): string | null {
 function parseLimit(value: unknown): number {
   const num = Number(value);
   if (!Number.isFinite(num)) return 50;
+
   const parsed = Math.trunc(num);
   if (parsed < 1) return 1;
   if (parsed > 200) return 200;
   return parsed;
 }
 
-async function handleLeadLookup(req: VercelRequest, res: VercelResponse): Promise<void> {
-  if (rateLimit(req, res, { keyPrefix: "matriculator-leads", windowMs: 60_000, max: 120 })) return;
+async function handleLeadLookup(ctx: ApiHandlerContext): Promise<void> {
+  const { req, res, fail, log } = ctx;
 
   const hasPlainToken = Boolean(String(process.env.MATRICULADOR_TOKEN || "").trim());
   const configuredTokenHash = String(process.env.MATRICULADOR_TOKEN_SHA256 || "")
@@ -283,18 +267,18 @@ async function handleLeadLookup(req: VercelRequest, res: VercelResponse): Promis
   const hasHashedToken = Boolean(configuredTokenHash);
 
   if (!hasPlainToken && !hasHashedToken) {
-    res.status(500).json({ error: "matriculator_token_not_configured" });
+    fail(500, "matriculator_token_not_configured", "Internal lookup token is not configured.");
     return;
   }
 
   if (hasHashedToken && !isValidSha256Hex(configuredTokenHash)) {
-    res.status(500).json({ error: "matriculator_token_hash_invalid" });
+    fail(500, "matriculator_token_hash_invalid", "Configured internal token hash is invalid.");
     return;
   }
 
   const providedToken = getTokenFromRequest(req);
-  if (!isAuthorizedMatriculatorToken(providedToken)) {
-    res.status(401).json({ error: "unauthorized" });
+  if (!isAuthorizedInternalToken(providedToken)) {
+    fail(401, "unauthorized", "Unauthorized internal lookup.");
     return;
   }
 
@@ -303,7 +287,9 @@ async function handleLeadLookup(req: VercelRequest, res: VercelResponse): Promis
   const limit = parseLimit(req.query?.limit);
 
   if (!leadCodePrefix && !paymentStatus) {
-    res.status(400).json({ error: "missing_filter", detail: "Use lead_code or payment_status." });
+    fail(400, "missing_filter", "Use lead_code or payment_status.", {
+      requiredFilters: ["lead_code", "payment_status"]
+    });
     return;
   }
 
@@ -357,18 +343,15 @@ async function handleLeadLookup(req: VercelRequest, res: VercelResponse): Promis
       rows = fullResult.rows;
     } catch (queryError) {
       const errorCode = String((queryError as { code?: unknown })?.code || "");
-      const undefinedPaymentColumns = errorCode === "42703";
-      if (!undefinedPaymentColumns) throw queryError;
+      if (errorCode !== "42703") throw queryError;
 
       if (paymentStatus) {
-        res.status(500).json({
-          error: "payment_status_filter_unavailable",
-          detail: "Apply migration db/init/050_lead_payment_link.sql to enable this filter."
+        fail(500, "payment_status_filter_unavailable", "Payment status filter unavailable before migration.", {
+          migration: "db/init/050_lead_payment_link.sql"
         });
         return;
       }
 
-      // Backward-compatible path while migration 050 is not applied yet.
       const legacyResult = await query<LeadLookupRow>(
         `select
             id,
@@ -426,88 +409,116 @@ async function handleLeadLookup(req: VercelRequest, res: VercelResponse): Promis
       }))
     });
   } catch (error) {
-    console.error("Failed to load leads for matriculator", error);
-    res.status(500).json({ error: "lead_lookup_failed" });
+    log.error({ error: sanitizeError(error) }, "lead_lookup_failed");
+    fail(500, "lead_lookup_failed", "Failed to fetch leads.");
   }
 }
 
-function getCourseSlug(body: any): string | null {
+function getCourseSlug(body: Record<string, unknown>): string | null {
   return (
-    sanitizeString(body?.course_slug, 120) ||
-    sanitizeString(body?.curso_slug, 120) ||
-    sanitizeString(body?.courseSlug, 120)
+    sanitizeString(body.course_slug, 120) ||
+    sanitizeString(body.curso_slug, 120) ||
+    sanitizeString(body.courseSlug, 120)
   );
 }
 
-function getAddress(body: any): Address | null {
-  if (body?.address && typeof body.address === "object") {
+function getAddress(body: Record<string, unknown>): Address | null {
+  if (body.address && typeof body.address === "object") {
     return normalizeAddress(body.address);
   }
 
   const fallback = {
-    cep: body?.cep,
-    street: body?.endereco,
-    number: body?.numero,
-    complement: body?.complemento,
-    neighborhood: body?.bairro,
-    city: body?.cidade,
-    state: body?.estado
+    cep: body.cep,
+    street: body.endereco,
+    number: body.numero,
+    complement: body.complemento,
+    neighborhood: body.bairro,
+    city: body.cidade,
+    state: body.estado
   };
+
   return normalizeAddress(fallback);
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  applySecurityHeaders(req, res);
-  if (cors(req, res)) return;
-
-  res.setHeader("Cache-Control", "no-store");
+async function leadsHandler(ctx: ApiHandlerContext): Promise<void> {
+  const { req, res, fail, log } = ctx;
 
   if (req.method === "GET") {
-    await handleLeadLookup(req, res);
+    await handleLeadLookup(ctx);
     return;
   }
 
-  if (req.method !== "POST") return res.status(405).end();
-
-  if (rateLimit(req, res, { keyPrefix: "leads", windowMs: 60_000, max: 60 })) return;
-
-  const body = req.body ?? {};
+  const body = (req.body ?? {}) as Record<string, unknown>;
 
   const courseSlug = getCourseSlug(body);
-  if (!courseSlug) return res.status(400).json({ error: "invalid_course" });
+  if (!courseSlug) {
+    fail(400, "invalid_course", "Invalid or missing course slug.");
+    return;
+  }
 
-  const name = sanitizeString(body?.name ?? body?.nome, 160);
-  const email = sanitizeString(body?.email, 180);
-  const phone = sanitizeString(body?.phone ?? body?.telefone, 40);
-  const fatherName = sanitizeString(body?.father_name ?? body?.nome_pai ?? body?.nomePai, 160);
-  const motherName = sanitizeString(body?.mother_name ?? body?.nome_mae ?? body?.nomeMae, 160);
-  const cpf = body?.cpf ? onlyDigits(body.cpf) : null;
-  const birthDate = sanitizeString(body?.birth_date ?? body?.nascimento, 10);
+  const name = sanitizeString(body.name ?? body.nome, 160);
+  const email = normalizeEmail(body.email, 180);
+  const phone = normalizePhone(body.phone ?? body.telefone);
+  const fatherName = sanitizeString(body.father_name ?? body.nome_pai ?? body.nomePai, 160);
+  const motherName = sanitizeString(body.mother_name ?? body.nome_mae ?? body.nomeMae, 160);
+  const cpf = normalizeCpf(body.cpf);
+  const birthDate = sanitizeString(body.birth_date ?? body.nascimento, 10);
 
-  if (!name) return res.status(400).json({ error: "invalid_name" });
-  if (!email || !email.includes("@")) return res.status(400).json({ error: "invalid_email" });
-  if (!phone || !isValidPhone(phone)) return res.status(400).json({ error: "invalid_phone" });
-  if (!fatherName) return res.status(400).json({ error: "missing_father_name" });
-  if (!motherName) return res.status(400).json({ error: "missing_mother_name" });
-  if (!cpf || !isValidCpf(cpf)) return res.status(400).json({ error: "invalid_cpf" });
-  if (!birthDate || !isValidBirthDate(birthDate)) return res.status(400).json({ error: "invalid_birth_date" });
+  if (!name) {
+    fail(400, "invalid_name", "Invalid or missing name.");
+    return;
+  }
+
+  if (!email || !isValidEmail(email)) {
+    fail(400, "invalid_email", "Invalid email.");
+    return;
+  }
+
+  if (!phone) {
+    fail(400, "invalid_phone", "Invalid phone number.");
+    return;
+  }
+
+  if (!fatherName) {
+    fail(400, "missing_father_name", "Missing father name.");
+    return;
+  }
+
+  if (!motherName) {
+    fail(400, "missing_mother_name", "Missing mother name.");
+    return;
+  }
+
+  if (!cpf || !isValidCpf(cpf)) {
+    fail(400, "invalid_cpf", "Invalid CPF.");
+    return;
+  }
+
+  if (!birthDate || !isValidBirthDate(birthDate)) {
+    fail(400, "invalid_birth_date", "Invalid birth date.");
+    return;
+  }
 
   const address = getAddress(body);
   if (!address || !hasRequiredAddressFields(address)) {
-    return res.status(400).json({ error: "invalid_address" });
+    fail(400, "invalid_address", "Invalid address.");
+    return;
   }
 
-  const experience = normalizeExperienceCredit(body?.experience_credit);
+  const experience = normalizeExperienceCredit(body.experience_credit);
   if (experience.requested && !experience.note) {
-    return res.status(400).json({ error: "invalid_experience_note" });
+    fail(400, "invalid_experience_note", "Experience note is required when experience credit is requested.");
+    return;
   }
 
   const courseRequirementsAck = normalizeCourseRequirementsAck(
-    body?.course_requirements_ack ?? body?.courseRequirementsAck ?? body?.experience_credit?.requirements_ack
+    body.course_requirements_ack ?? body.courseRequirementsAck ??
+      (body.experience_credit as Record<string, unknown> | undefined)?.requirements_ack
   );
   const requirementsError = validateCourseRequirements(courseSlug, courseRequirementsAck);
   if (requirementsError) {
-    return res.status(400).json({ error: requirementsError });
+    fail(400, requirementsError, "Course requirements acknowledgements are incomplete.");
+    return;
   }
 
   let course: { id: string; slug: string; name: string; price_cents: number } | null = null;
@@ -518,13 +529,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
     course = rows?.[0] || null;
   } catch (error) {
-    console.error("Failed to fetch course", error);
-    return res.status(500).json({ error: "courses_fetch_failed" });
+    log.error({ error: sanitizeError(error) }, "courses_fetch_failed");
+    fail(500, "courses_fetch_failed", "Failed to load selected course.");
+    return;
   }
 
-  if (!course) return res.status(400).json({ error: "unknown_course" });
+  if (!course) {
+    fail(400, "unknown_course", "Course does not exist or is inactive.");
+    return;
+  }
 
-  const sourceUrl = sanitizeString(body?.source_url ?? body?.origem, 500);
+  const sourceUrl = sanitizeString(body.source_url ?? body.origem, 500);
 
   const payload = {
     course: {
@@ -591,10 +606,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
 
     const leadId = rows?.[0]?.id || "";
-    const leadCode = buildLeadCode(leadId);
-    return res.status(200).json({ ok: true, lead_id: leadId, lead_code: leadCode });
+    res.status(200).json({ ok: true, lead_id: leadId, lead_code: buildLeadCode(leadId) });
   } catch (error) {
-    console.error("Failed to create lead enrollment", error);
-    return res.status(500).json({ error: "lead_create_failed" });
+    log.error({ error: sanitizeError(error) }, "lead_create_failed");
+    fail(500, "lead_create_failed", "Failed to create lead enrollment.");
   }
 }
+
+export default withApiHandler(leadsHandler, {
+  methods: ["GET", "POST"],
+  cacheControl: "no-store",
+  rateLimit: (req) => {
+    if (req.method === "GET") {
+      return { keyPrefix: "matriculator-leads", windowMs: 60_000, max: 120 };
+    }
+
+    if (req.method === "POST") {
+      return { keyPrefix: "leads", windowMs: 60_000, max: 60 };
+    }
+
+    return null;
+  }
+});

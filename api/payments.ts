@@ -1,8 +1,8 @@
 import { createHash } from "crypto";
-import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { cors } from "../lib/cors.js";
+import type { VercelRequest } from "@vercel/node";
+import { withApiHandler, type ApiHandlerContext } from "../lib/apiHandler.js";
 import { query } from "../lib/db.js";
-import { applySecurityHeaders } from "../lib/http.js";
+import { sanitizeError } from "../lib/logger.js";
 import {
   buildAutomaticIdempotencyKey,
   getCheckoutResponseHttpStatus,
@@ -17,7 +17,15 @@ import {
   type RedeConfig,
   type RedeTransactionResponse
 } from "../lib/rede.js";
-import { rateLimit } from "../lib/rateLimit.js";
+import {
+  isValidCpf,
+  isValidEmail,
+  normalizeCpf,
+  normalizeEmail,
+  normalizePhone,
+  onlyDigits,
+  sanitizeString
+} from "../lib/validators.js";
 
 type CourseRow = {
   id: string;
@@ -86,16 +94,6 @@ let idempotencySchemaState: "unknown" | "ready" | "unavailable" = "unknown";
 let idempotencySchemaAttemptPromise: Promise<boolean> | null = null;
 let idempotencySchemaLastAttemptAt = 0;
 
-function sanitizeString(value: unknown, maxLen = 240): string | null {
-  const text = String(value ?? "").trim();
-  if (!text) return null;
-  return text.length > maxLen ? text.slice(0, maxLen) : text;
-}
-
-function onlyDigits(value: unknown): string {
-  return String(value ?? "").replace(/\D+/g, "");
-}
-
 function getHeaderValue(req: VercelRequest, name: string): string {
   const raw = req.headers[name.toLowerCase()];
   if (typeof raw === "string") return raw.trim();
@@ -110,17 +108,6 @@ function getPgErrorCode(error: unknown): string {
 function isUuid(value: string | null): boolean {
   if (!value) return false;
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
-}
-
-function isValidEmail(value: string | null): boolean {
-  if (!value) return false;
-  if (value.length > 180) return false;
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
-}
-
-function isValidPhone(value: string | null): boolean {
-  const digits = onlyDigits(value);
-  return digits.length >= 10 && digits.length <= 13;
 }
 
 function luhnCheck(cardNumber: string): boolean {
@@ -207,6 +194,38 @@ function getBrandName(data: RedeTransactionResponse): string | null {
   }
 
   return null;
+}
+
+function sanitizeProviderResponse(data: RedeTransactionResponse): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = {};
+
+  const tid = sanitizeString(data.tid, 120);
+  if (tid) sanitized.tid = tid;
+
+  const reference = sanitizeString(data.reference, 120);
+  if (reference) sanitized.reference = reference;
+
+  const returnCode = sanitizeString(data.returnCode, 20);
+  if (returnCode) sanitized.returnCode = returnCode;
+
+  const returnMessage = sanitizeString(data.returnMessage, 160);
+  if (returnMessage) sanitized.returnMessage = returnMessage;
+
+  const authorizationCode = sanitizeString(data.authorizationCode, 40);
+  if (authorizationCode) sanitized.authorizationCode = authorizationCode;
+
+  const brand = getBrandName(data);
+  if (brand) sanitized.brand = brand;
+
+  const threeDSecureUrl = getThreeDSecureUrl(data);
+  if (threeDSecureUrl) {
+    sanitized.threeDSecure = { url: threeDSecureUrl };
+  }
+
+  if (typeof data.mock === "boolean") sanitized.mock = data.mock;
+  if (typeof data.mockMaskedCard === "string") sanitized.mockMaskedCard = data.mockMaskedCard;
+
+  return sanitized;
 }
 
 function buildLeadCode(leadId: string | null | undefined): string {
@@ -444,7 +463,7 @@ async function loadCheckoutByReference(
   }
 }
 
-async function ensureIdempotencySchemaReady(): Promise<boolean> {
+async function ensureIdempotencySchemaReady(ctx: ApiHandlerContext): Promise<boolean> {
   if (idempotencySchemaState === "ready") return true;
 
   const now = Date.now();
@@ -496,7 +515,7 @@ async function ensureIdempotencySchemaReady(): Promise<boolean> {
       return true;
     } catch (error) {
       idempotencySchemaState = "unavailable";
-      console.error("Failed to ensure idempotency schema", error);
+      ctx.log.error({ error: sanitizeError(error) }, "payment_idempotency_schema_ensure_failed");
       return false;
     } finally {
       idempotencySchemaAttemptPromise = null;
@@ -630,46 +649,58 @@ async function insertProcessingCheckout(
   throw new Error("payment_checkout_schema_incompatible");
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  applySecurityHeaders(req, res);
-  if (cors(req, res)) return;
-  if (req.method !== "POST") return res.status(405).end();
-
-  res.setHeader("Cache-Control", "no-store");
-
-  if (rateLimit(req, res, { keyPrefix: "payments", windowMs: 60_000, max: 25 })) return;
+async function paymentsHandler(ctx: ApiHandlerContext): Promise<void> {
+  const { req, res, fail, log, requestId } = ctx;
+  const body = (req.body ?? {}) as Record<string, unknown>;
 
   let providerMode: PaymentProviderMode;
   try {
     providerMode = getPaymentProviderMode();
   } catch (error) {
-    console.error("Payment provider mode error", error);
-    return res.status(500).json({ error: "payment_provider_mode_invalid" });
+    log.error({ error: sanitizeError(error) }, "payment_provider_mode_invalid");
+    fail(500, "payment_provider_mode_invalid", "Invalid payment provider mode configuration.");
+    return;
   }
 
-  const body = req.body ?? {};
+  const courseSlug = sanitizeString(body.course_slug ?? body.courseSlug ?? body.course, 120);
+  if (!courseSlug) {
+    fail(400, "invalid_course", "Invalid or missing course.");
+    return;
+  }
 
-  const courseSlug = sanitizeString(body?.course_slug ?? body?.courseSlug ?? body?.course, 120);
-  if (!courseSlug) return res.status(400).json({ error: "invalid_course" });
+  const leadId = sanitizeString(body.lead_id ?? body.leadId ?? body.lead, 80);
+  if (!leadId) {
+    fail(400, "missing_lead_id", "Missing lead identifier.");
+    return;
+  }
 
-  const leadId = sanitizeString(body?.lead_id ?? body?.leadId ?? body?.lead, 80);
-  if (!leadId) return res.status(400).json({ error: "missing_lead_id" });
-  if (!isUuid(leadId)) return res.status(400).json({ error: "invalid_lead_id" });
+  if (!isUuid(leadId)) {
+    fail(400, "invalid_lead_id", "Invalid lead identifier.");
+    return;
+  }
 
   let lead: LeadRow | null = null;
   try {
     lead = await loadLeadById(leadId);
   } catch (error) {
-    console.error("Failed to load lead for payment", error);
-    return res.status(500).json({ error: "lead_fetch_failed" });
+    log.error({ error: sanitizeError(error) }, "lead_fetch_failed");
+    fail(500, "lead_fetch_failed", "Failed to load lead for payment.");
+    return;
   }
 
-  if (!lead) return res.status(400).json({ error: "invalid_lead" });
-  if (lead.course_slug !== courseSlug) return res.status(400).json({ error: "lead_course_mismatch" });
+  if (!lead) {
+    fail(400, "invalid_lead", "Lead not found.");
+    return;
+  }
+
+  if (lead.course_slug !== courseSlug) {
+    fail(400, "lead_course_mismatch", "Lead does not match selected course.");
+    return;
+  }
 
   if (lead.payment_status === "approved") {
     const paidAmount = Math.max(0, Number(lead.course_price_cents || 0));
-    return res.status(200).json(
+    res.status(200).json(
       buildPaymentResponse({
         status: "approved",
         checkoutId: null,
@@ -693,64 +724,91 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         leadAlreadyPaid: true
       })
     );
+    return;
   }
 
   if (lead.payment_status === "processing" || lead.payment_status === "pending_authentication") {
-    return res.status(409).json({
+    res.status(409).json({
+      code: "payment_in_progress",
       error: "payment_in_progress",
+      message: "A payment is already in progress for this lead.",
+      requestId,
       status: lead.payment_status,
       reference: lead.payment_reference || null,
       tid: lead.payment_tid || null
     });
+    return;
   }
 
   const customerName =
-    sanitizeString(body?.customer?.name ?? body?.name, 160) || sanitizeString(lead.customer_name, 160);
+    sanitizeString((body.customer as Record<string, unknown> | undefined)?.name ?? body.name, 160) ||
+    sanitizeString(lead.customer_name, 160);
   const customerEmail =
-    sanitizeString(body?.customer?.email ?? body?.email, 180) || sanitizeString(lead.customer_email, 180);
+    normalizeEmail((body.customer as Record<string, unknown> | undefined)?.email ?? body.email, 180) ||
+    normalizeEmail(lead.customer_email, 180);
   const customerPhone =
-    sanitizeString(body?.customer?.phone ?? body?.phone ?? body?.telefone, 40) ||
-    sanitizeString(lead.customer_phone, 40);
-  const customerCpf = onlyDigits(body?.customer?.cpf ?? body?.cpf ?? lead.cpf);
+    normalizePhone((body.customer as Record<string, unknown> | undefined)?.phone ?? body.phone ?? body.telefone) ||
+    normalizePhone(lead.customer_phone);
+  const customerCpf = normalizeCpf(
+    (body.customer as Record<string, unknown> | undefined)?.cpf ?? body.cpf ?? lead.cpf
+  );
 
-  if (!customerName) return res.status(400).json({ error: "invalid_customer_name" });
+  if (!customerName) {
+    fail(400, "invalid_customer_name", "Invalid customer name.");
+    return;
+  }
+
   if (!customerEmail || !isValidEmail(customerEmail)) {
-    return res.status(400).json({ error: "invalid_customer_email" });
+    fail(400, "invalid_customer_email", "Invalid customer email.");
+    return;
   }
-  if (!customerPhone || !isValidPhone(customerPhone)) {
-    return res.status(400).json({ error: "invalid_customer_phone" });
-  }
-  if (customerCpf && customerCpf.length !== 11) return res.status(400).json({ error: "invalid_customer_cpf" });
 
+  if (!customerPhone) {
+    fail(400, "invalid_customer_phone", "Invalid customer phone.");
+    return;
+  }
+
+  if (customerCpf && !isValidCpf(customerCpf)) {
+    fail(400, "invalid_customer_cpf", "Invalid customer CPF.");
+    return;
+  }
+
+  const cardInput = (body.card ?? {}) as Record<string, unknown>;
   const cardHolderName = sanitizeString(
-    body?.card?.holder_name ?? body?.card_holder_name ?? body?.cardHolderName,
+    cardInput.holder_name ?? body.card_holder_name ?? body.cardHolderName,
     160
   );
-  const cardNumber = onlyDigits(body?.card?.number ?? body?.card_number ?? body?.cardNumber);
-  const securityCode = onlyDigits(body?.card?.cvv ?? body?.card_cvv ?? body?.cardCvv);
+  const cardNumber = onlyDigits(cardInput.number ?? body.card_number ?? body.cardNumber);
+  const securityCode = onlyDigits(cardInput.cvv ?? body.card_cvv ?? body.cardCvv);
   const expirationMonth = normalizeMonth(
-    body?.card?.exp_month ?? body?.card_expiration_month ?? body?.expirationMonth
+    cardInput.exp_month ?? body.card_expiration_month ?? body.expirationMonth
   );
-  const expirationYear = normalizeYear(
-    body?.card?.exp_year ?? body?.card_expiration_year ?? body?.expirationYear
-  );
-  const installments = parseInstallments(body?.installments);
+  const expirationYear = normalizeYear(cardInput.exp_year ?? body.card_expiration_year ?? body.expirationYear);
+  const installments = parseInstallments(body.installments);
 
-  if (!cardHolderName) return res.status(400).json({ error: "invalid_card_holder_name" });
+  if (!cardHolderName) {
+    fail(400, "invalid_card_holder_name", "Invalid card holder name.");
+    return;
+  }
+
   if (cardNumber.length < 13 || cardNumber.length > 19 || !luhnCheck(cardNumber)) {
-    return res.status(400).json({ error: "invalid_card_number" });
+    fail(400, "invalid_card_number", "Invalid card number.");
+    return;
   }
 
   if (securityCode.length < 3 || securityCode.length > 4) {
-    return res.status(400).json({ error: "invalid_card_cvv" });
+    fail(400, "invalid_card_cvv", "Invalid card CVV.");
+    return;
   }
 
   if (!expirationMonth || !expirationYear) {
-    return res.status(400).json({ error: "invalid_card_expiration" });
+    fail(400, "invalid_card_expiration", "Invalid card expiration.");
+    return;
   }
 
   if (isCardExpired(expirationMonth, expirationYear)) {
-    return res.status(400).json({ error: "expired_card" });
+    fail(400, "expired_card", "Card is expired.");
+    return;
   }
 
   let course: CourseRow | null = null;
@@ -765,26 +823,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
     course = rows?.[0] ?? null;
   } catch (error) {
-    console.error("Failed to load course for payment", error);
-    return res.status(500).json({ error: "courses_fetch_failed" });
+    log.error({ error: sanitizeError(error) }, "courses_fetch_failed");
+    fail(500, "courses_fetch_failed", "Failed to load course for payment.");
+    return;
   }
 
-  if (!course) return res.status(400).json({ error: "unknown_course" });
+  if (!course) {
+    fail(400, "unknown_course", "Unknown course.");
+    return;
+  }
 
   const amountCents = Math.max(0, Number(course.price_cents || 0));
   if (!Number.isFinite(amountCents) || amountCents <= 0) {
-    return res.status(400).json({ error: "invalid_course_amount" });
+    fail(400, "invalid_course_amount", "Invalid course amount.");
+    return;
   }
 
   const rawIdempotencyKey =
     getHeaderValue(req, "idempotency-key") ||
-    sanitizeString(body?.idempotency_key ?? body?.idempotencyKey, 120) ||
+    sanitizeString(body.idempotency_key ?? body.idempotencyKey, 120) ||
     "";
   const hasExplicitIdempotencyKey = Boolean(rawIdempotencyKey);
   const explicitIdempotencyKey = normalizeIdempotencyKey(rawIdempotencyKey);
 
   if (hasExplicitIdempotencyKey && !explicitIdempotencyKey) {
-    return res.status(400).json({ error: "invalid_idempotency_key" });
+    fail(400, "invalid_idempotency_key", "Invalid idempotency key.");
+    return;
   }
 
   const idempotencyKey =
@@ -801,9 +865,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
 
   res.setHeader("Idempotency-Key", idempotencyKey);
-  const explicitReference = sanitizeString(body?.reference, 80);
+  const explicitReference = sanitizeString(body.reference, 80);
   const reference = explicitReference || buildReferenceFromIdempotencyKey(course.slug, idempotencyKey);
-  const sourceUrl = sanitizeString(body?.source_url ?? body?.sourceUrl ?? req.headers.referer, 500);
+  const sourceUrl = sanitizeString(body.source_url ?? body.sourceUrl ?? req.headers.referer, 500);
 
   let idempotencyPersisted = true;
   try {
@@ -814,7 +878,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let existingCheckout = idempotencyLookup.checkout;
 
     if (!idempotencyLookup.available) {
-      const schemaReady = await ensureIdempotencySchemaReady();
+      const schemaReady = await ensureIdempotencySchemaReady(ctx);
       if (schemaReady) {
         idempotencyLookup = await loadCheckoutByIdempotencyKey(idempotencyKey);
         idempotencyPersisted = idempotencyLookup.available;
@@ -823,43 +887,45 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    // Fallback for environments where column idempotency_key is unavailable.
     if (!existingCheckout && !idempotencyPersisted) {
       existingCheckout = await loadCheckoutByReference(reference, lead.id);
     }
 
     if (existingCheckout) {
       if (existingCheckout.lead_id && existingCheckout.lead_id !== lead.id) {
-        return res.status(409).json({ error: "idempotency_key_conflict" });
+        fail(409, "idempotency_key_conflict", "Idempotency key is already bound to another lead.");
+        return;
       }
 
-      const reusedResponse = buildPaymentResponse({
-        status: existingCheckout.status,
-        checkoutId: existingCheckout.id,
-        lead,
-        course,
-        amountCents: Number(existingCheckout.amount_cents || amountCents),
-        installments: Number(existingCheckout.installments || installments),
-        reference: existingCheckout.reference || null,
-        tid: existingCheckout.provider_tid,
-        authorizationCode: existingCheckout.provider_authorization_code,
-        returnCode: existingCheckout.provider_return_code,
-        returnMessage: existingCheckout.provider_return_message,
-        redirectUrl: existingCheckout.provider_three_d_secure_url,
-        customerName,
-        customerEmail,
-        customerPhone,
-        idempotencyKey,
-        idempotentReused: true,
-        idempotencyPersisted,
-        providerMode
-      });
-
-      return res.status(getCheckoutResponseHttpStatus(existingCheckout.status)).json(reusedResponse);
+      res.status(getCheckoutResponseHttpStatus(existingCheckout.status)).json(
+        buildPaymentResponse({
+          status: existingCheckout.status,
+          checkoutId: existingCheckout.id,
+          lead,
+          course,
+          amountCents: Number(existingCheckout.amount_cents || amountCents),
+          installments: Number(existingCheckout.installments || installments),
+          reference: existingCheckout.reference || null,
+          tid: existingCheckout.provider_tid,
+          authorizationCode: existingCheckout.provider_authorization_code,
+          returnCode: existingCheckout.provider_return_code,
+          returnMessage: existingCheckout.provider_return_message,
+          redirectUrl: existingCheckout.provider_three_d_secure_url,
+          customerName,
+          customerEmail,
+          customerPhone,
+          idempotencyKey,
+          idempotentReused: true,
+          idempotencyPersisted,
+          providerMode
+        })
+      );
+      return;
     }
   } catch (error) {
-    console.error("Failed to perform idempotency lookup", error);
-    return res.status(500).json({ error: "payment_idempotency_lookup_failed" });
+    log.error({ error: sanitizeError(error) }, "payment_idempotency_lookup_failed");
+    fail(500, "payment_idempotency_lookup_failed", "Failed to perform idempotency lookup.");
+    return;
   }
 
   let redeConfig: RedeConfig | null = null;
@@ -867,16 +933,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     try {
       redeConfig = getRedeConfig();
     } catch (error) {
-      console.error("Rede config error", error);
-      return res.status(500).json({ error: "payment_provider_not_configured" });
+      log.error({ error: sanitizeError(error) }, "payment_provider_not_configured");
+      fail(500, "payment_provider_not_configured", "Payment provider is not configured.");
+      return;
     }
 
     if (isProductionRuntime() && redeConfig.environment !== "production") {
-      return res.status(500).json({
+      res.status(500).json({
+        code: "payment_provider_environment_mismatch",
         error: "payment_provider_environment_mismatch",
+        message: "Payment provider environment mismatch.",
+        requestId,
         expected_env: "production",
         current_env: redeConfig.environment
       });
+      return;
     }
   }
 
@@ -905,37 +976,39 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     idempotencyPersisted = insertOutcome.idempotencyPersisted;
 
     if (insertOutcome.reusedCheckout) {
-      const reusedResponse = buildPaymentResponse({
-        status: insertOutcome.reusedCheckout.status,
-        checkoutId: insertOutcome.reusedCheckout.id,
-        lead,
-        course,
-        amountCents: Number(insertOutcome.reusedCheckout.amount_cents || amountCents),
-        installments: Number(insertOutcome.reusedCheckout.installments || installments),
-        reference: insertOutcome.reusedCheckout.reference || null,
-        tid: insertOutcome.reusedCheckout.provider_tid,
-        authorizationCode: insertOutcome.reusedCheckout.provider_authorization_code,
-        returnCode: insertOutcome.reusedCheckout.provider_return_code,
-        returnMessage: insertOutcome.reusedCheckout.provider_return_message,
-        redirectUrl: insertOutcome.reusedCheckout.provider_three_d_secure_url,
-        customerName,
-        customerEmail,
-        customerPhone,
-        idempotencyKey,
-        idempotentReused: true,
-        idempotencyPersisted,
-        providerMode
-      });
-
-      return res
+      res
         .status(getCheckoutResponseHttpStatus(insertOutcome.reusedCheckout.status))
-        .json(reusedResponse);
+        .json(
+          buildPaymentResponse({
+            status: insertOutcome.reusedCheckout.status,
+            checkoutId: insertOutcome.reusedCheckout.id,
+            lead,
+            course,
+            amountCents: Number(insertOutcome.reusedCheckout.amount_cents || amountCents),
+            installments: Number(insertOutcome.reusedCheckout.installments || installments),
+            reference: insertOutcome.reusedCheckout.reference || null,
+            tid: insertOutcome.reusedCheckout.provider_tid,
+            authorizationCode: insertOutcome.reusedCheckout.provider_authorization_code,
+            returnCode: insertOutcome.reusedCheckout.provider_return_code,
+            returnMessage: insertOutcome.reusedCheckout.provider_return_message,
+            redirectUrl: insertOutcome.reusedCheckout.provider_three_d_secure_url,
+            customerName,
+            customerEmail,
+            customerPhone,
+            idempotencyKey,
+            idempotentReused: true,
+            idempotencyPersisted,
+            providerMode
+          })
+        );
+      return;
     }
 
     checkoutId = insertOutcome.checkoutId;
   } catch (error) {
-    console.error("Failed to create payment checkout log before provider call", error);
-    return res.status(500).json({ error: "payment_log_unavailable" });
+    log.error({ error: sanitizeError(error) }, "payment_log_unavailable");
+    fail(500, "payment_log_unavailable", "Failed to initialize payment checkout log.");
+    return;
   }
 
   let providerResult: Awaited<ReturnType<typeof createRedeCreditTransaction>> | null = null;
@@ -959,8 +1032,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         ? await createRedeCreditTransaction(redeConfig as RedeConfig, providerPayload)
         : await createMockCreditTransaction(providerPayload);
   } catch (error) {
-    console.error("Provider request failed", error);
     const providerFailureMessage = `Provider request failed (${providerMode})`;
+    log.error({ error: sanitizeError(error), providerMode }, "payment_provider_unavailable");
 
     if (checkoutId) {
       try {
@@ -978,7 +1051,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           ]
         );
       } catch (updateError) {
-        console.error("Failed to update payment checkout log after provider failure", updateError);
+        log.error({ error: sanitizeError(updateError) }, "payment_checkout_update_after_provider_failure_failed");
       }
     }
 
@@ -995,23 +1068,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         [lead.id, "provider_unavailable", reference, providerFailureMessage]
       );
     } catch (leadUpdateError) {
-      console.error("Failed to update lead payment status after provider failure", leadUpdateError);
+      log.error({ error: sanitizeError(leadUpdateError) }, "lead_update_after_provider_failure_failed");
     }
 
-    return res.status(502).json({
+    res.status(502).json({
+      code: "payment_provider_unavailable",
       error: "payment_provider_unavailable",
+      message: "Payment provider unavailable.",
+      requestId,
       idempotency_key: idempotencyKey,
       idempotency_persisted: idempotencyPersisted,
       provider_mode: providerMode
     });
+    return;
   }
 
-  const returnCode = getReturnCode(providerResult.data);
-  const returnMessage = getReturnMessage(providerResult.data);
-  const tid = sanitizeString(providerResult.data.tid, 120);
-  const authorizationCode = sanitizeString(providerResult.data.authorizationCode, 40);
-  const threeDSecureUrl = getThreeDSecureUrl(providerResult.data);
-  const brandName = getBrandName(providerResult.data);
+  const providerData = providerResult.data || {};
+  const returnCode = getReturnCode(providerData);
+  const returnMessage = getReturnMessage(providerData);
+  const tid = sanitizeString(providerData.tid, 120);
+  const authorizationCode = sanitizeString(providerData.authorizationCode, 40);
+  const threeDSecureUrl = getThreeDSecureUrl(providerData);
+  const brandName = getBrandName(providerData);
+  const sanitizedProviderData = sanitizeProviderResponse(providerData);
 
   const approved = returnCode === "00";
   const requiresAction = Boolean(threeDSecureUrl);
@@ -1045,11 +1124,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           authorizationCode,
           threeDSecureUrl,
           brandName,
-          JSON.stringify(providerResult.data || {})
+          JSON.stringify(sanitizedProviderData)
         ]
       );
     } catch (error) {
-      console.error("Failed to update payment checkout log", error);
+      log.error({ error: sanitizeError(error) }, "payment_checkout_update_failed");
     }
   }
 
@@ -1067,20 +1146,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       [lead.id, status, reference, tid, returnCode || null, returnMessage || null]
     );
   } catch (error) {
-    console.error("Failed to update lead payment status", error);
+    log.error({ error: sanitizeError(error) }, "lead_payment_status_update_failed");
   }
 
   if (credentialsError) {
-    return res.status(500).json({
+    res.status(500).json({
+      code: "payment_provider_credentials_invalid",
       error: "payment_provider_credentials_invalid",
+      message: "Invalid payment provider credentials.",
+      requestId,
       return_code: returnCode || null,
       idempotency_key: idempotencyKey,
       idempotency_persisted: idempotencyPersisted,
       provider_mode: providerMode
     });
+    return;
   }
 
-  return res.status(200).json(
+  res.status(200).json(
     buildPaymentResponse({
       status,
       checkoutId,
@@ -1104,3 +1187,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     })
   );
 }
+
+export default withApiHandler(paymentsHandler, {
+  methods: ["POST"],
+  cacheControl: "no-store",
+  rateLimit: { keyPrefix: "payments", windowMs: 60_000, max: 25 }
+});

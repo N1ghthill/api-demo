@@ -1,4 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
+import { sendApiError } from "./apiErrors.js";
 
 const DEFAULT_FRONTEND_BASE_URL =
   "http://localhost:5500,http://127.0.0.1:5500";
@@ -46,14 +47,18 @@ function getAllowedOrigins(): string[] {
   return Array.from(new Set([...configured, ...defaults, ...extras]));
 }
 
-export function cors(req: VercelRequest, res: VercelResponse): boolean {
+export function cors(req: VercelRequest, res: VercelResponse, requestId = "unknown"): boolean {
   const origin = typeof req.headers.origin === "string" ? req.headers.origin : "";
   const allowedOrigins = getAllowedOrigins();
   const normalizedOrigin = origin ? normalizeOrigin(origin) : "";
   res.setHeader("Vary", "Origin");
 
   if (origin && allowedOrigins.length && !allowedOrigins.includes(normalizedOrigin)) {
-    res.status(403).json({ error: "forbidden_origin" });
+    sendApiError(res, 403, {
+      code: "forbidden_origin",
+      message: "Origin is not allowed by CORS policy.",
+      requestId
+    });
     return true;
   }
 
@@ -64,7 +69,7 @@ export function cors(req: VercelRequest, res: VercelResponse): boolean {
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Content-Type, Authorization, X-Matriculator-Token, Idempotency-Key"
+    "Content-Type, Authorization, X-Matriculator-Token, X-Internal-Token, Idempotency-Key"
   );
 
   if (req.method === "OPTIONS") {
