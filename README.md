@@ -1,8 +1,8 @@
 # api-demo
 
-API de demonstração para portfólio backend: fluxo completo de **catálogo -> lead -> checkout -> operação interna**, com foco em qualidade de produção.
+API de demonstração: fluxo completo de **catálogo -> lead -> checkout -> operação interna**, com foco em qualidade de produção.
 
-Resumo rápido (para recrutadores):
+Resumo rápido:
 - Stack: Node.js, TypeScript, PostgreSQL, Vercel Functions.
 - Escopo: endpoint público de cursos/leads/pagamentos + endpoint interno protegido.
 - Engenharia: idempotência de pagamento, validações fortes, fallback de schema, rate limit, headers de segurança, testes automatizados.
@@ -83,7 +83,6 @@ npm run check
 
 ## Pontos de avaliação técnica
 
-Se você estiver avaliando este repositório para vaga backend, os pontos principais estão em:
 - `api/payments.ts`: idempotência, tratamento de erro de provider e consistência de status.
 - `api/leads.ts`: autenticação de endpoint interno e normalização/validação de dados.
 - `lib/rede.ts`: estratégia de provider mockável para demo e testes.
