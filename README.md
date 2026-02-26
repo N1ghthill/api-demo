@@ -1,93 +1,132 @@
 # api-demo
 
-API de demonstração: fluxo completo de **catálogo -> lead -> checkout -> operação interna**, com foco em qualidade de produção.
+[![CI](https://github.com/N1ghthill/api-demo/actions/workflows/ci.yml/badge.svg)](https://github.com/N1ghthill/api-demo/actions/workflows/ci.yml)
 
-Resumo rápido:
-- Stack: Node.js, TypeScript, PostgreSQL, Vercel Functions.
-- Escopo: endpoint público de cursos/leads/pagamentos + endpoint interno protegido.
-- Engenharia: idempotência de pagamento, validações fortes, fallback de schema, rate limit, headers de segurança, testes automatizados.
+API de demonstração para portfólio backend com fluxo completo de matrícula:
+`catálogo -> lead -> checkout -> operação interna`.
+
+## Stack
+
+- Node.js + TypeScript
+- Express (adapter local) + handlers compatíveis com Vercel
+- PostgreSQL
+- Pagamento com modo `mock` (padrão) e `rede` (real)
+- Logs estruturados com `pino`
 
 ## O que este projeto demonstra
 
-- Design de API orientado a operação real.
-- Evita cobrança duplicada com `Idempotency-Key`.
-- Persistência resiliente de tentativas de checkout.
-- Separação clara entre tráfego público e consulta interna autenticada.
-- Integração de pagamento desacoplada por modo (`mock` / `rede`).
+- Idempotência de pagamentos (`Idempotency-Key`)
+- Tratamento resiliente de schema/migrations
+- Validações reutilizáveis (email, telefone, UF, CPF)
+- Rate limit com fallback em memória e suporte opcional a Redis
+- Erros padronizados: `{ code, message, details?, requestId }`
+- Contrato OpenAPI completo em `docs/openapi.yaml`
 
-## Arquitetura
+## Endpoints
 
-- `api/health.ts`: healthcheck.
-- `api/courses.ts`: catálogo de cursos ativos.
-- `api/leads.ts`: criação e busca interna de leads com token/hash.
-- `api/payments.ts`: checkout com idempotência e atualização de status.
-- `lib/rede.ts`: gateway de pagamento (mock e e.Rede).
-- `db/init/*.sql`: schema, seeds e tabelas de checkout/idempotência.
+- `GET /api/health`
+- `GET /api/courses`
+- `POST /api/leads`
+- `GET /api/leads` (interno, exige token)
+- `POST /api/payments`
 
-## Fluxo principal
-
-1. Frontend cria lead em `POST /api/leads`.
-2. Frontend inicia pagamento em `POST /api/payments` com `Idempotency-Key`.
-3. API registra checkout em `processing`, consulta provider e persiste resultado.
-4. Repetição com mesma chave retorna o mesmo resultado sem nova cobrança.
-5. Equipe interna consulta `GET /api/leads` com token seguro.
-
-Diagramas completos em `docs/flows.md`.
-
-## Como rodar localmente
+## Execução local (sem Docker)
 
 Pré-requisitos:
 - Node.js 20+
-- Docker + Docker Compose
+- PostgreSQL rodando e acessível
 
 ```bash
-npm install
+npm ci
+cp .env.example .env.local
+npm run db:apply   # se estiver usando banco já disponível
+npm run dev
+```
+
+API local: `http://localhost:3000`
+
+## Execução local com Docker (Postgres)
+
+```bash
+npm ci
 cp .env.example .env.local
 docker compose up -d db
 npm run db:setup
 npm run dev
 ```
 
-Base URL local: `http://localhost:3000`
+## Build de produção
 
-## Modo de pagamento
+```bash
+npm run build
+npm start
+```
+
+- `npm run build` gera saída em `dist/`
+- `npm start` executa `node dist/server.js`
+
+## Qualidade e checks
+
+```bash
+npm run lint
+npm run check
+```
+
+`npm run check` executa typecheck + testes.
+
+## OpenAPI
+
+Contrato em `docs/openapi.yaml`.
+
+Validar contrato:
+
+```bash
+npm run docs:openapi
+```
+
+Headers importantes documentados:
+- `Idempotency-Key` em `POST /api/payments`
+- `x-internal-token` (ou `x-matriculator-token`) em `GET /api/leads`
+
+## Rate limit com Redis (opcional)
+
+Por padrão, o rate-limit usa memória local.
+
+Para habilitar Redis:
+
+```env
+REDIS_URL=redis://localhost:6379
+```
+
+Se `REDIS_URL` estiver ausente ou indisponível, a API faz fallback automático para memória.
+
+## Pagamento: modos disponíveis
 
 No `.env.local`:
 
 - `PAYMENT_PROVIDER_MODE=mock` (padrão para demo)
 - `PAYMENT_PROVIDER_MODE=rede` (integração real, exige `REDE_*`)
 
-Cenários mock:
-- aprovado: cartão válido (ex: `5448280000000007`)
-- negado: final `0000` (ex: `5448280000070000`)
-- exige autenticação: final `1111` (ex: `5448280000011111`)
+Exemplos mock:
+- aprovado: `5448280000000007`
+- negado: `5448280000070000`
+- requer autenticação: `5448280000011111`
 
-## Documentação complementar
+## Observabilidade e segurança
 
-- `docs/case.md`: contexto e decisões de engenharia.
-- `docs/flows.md`: diagramas de sequência.
-- `docs/examples.md`: exemplos cURL ponta a ponta.
+- `X-Request-Id` em todas as respostas
+- logs estruturados sem exposição de `cardNumber`, `cvv`, `Authorization` e tokens internos
+- `provider_response` persistido com whitelist/sanitização de campos
 
-## Qualidade e segurança
+## Arquivos-chave para avaliação técnica
 
-- Input validation de payload e campos críticos.
-- CORS controlado + allowlist de origens.
-- Rate limit por endpoint.
-- Headers de segurança e request-id.
-- Tokens internos com comparação segura e suporte a hash SHA-256.
-- Testes + typecheck:
-
-```bash
-npm run check
-```
-
-## Pontos de avaliação técnica
-
-- `api/payments.ts`: idempotência, tratamento de erro de provider e consistência de status.
-- `api/leads.ts`: autenticação de endpoint interno e normalização/validação de dados.
-- `lib/rede.ts`: estratégia de provider mockável para demo e testes.
-- `db/init/060_payment_idempotency.sql`: base SQL para prevenção de duplicidade.
+- `api/payments.ts`
+- `api/leads.ts`
+- `lib/apiHandler.ts`
+- `lib/rateLimit.ts`
+- `lib/validators.ts`
+- `docs/openapi.yaml`
 
 ## Licença
 
-MIT (`LICENSE`).
+MIT (`LICENSE`)

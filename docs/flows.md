@@ -47,7 +47,7 @@ sequenceDiagram
   participant API
   participant DB
 
-  Ops->>API: GET /api/leads?lead_code=... + x-matriculator-token
+  Ops->>API: GET /api/leads?lead_code=... + x-internal-token
   API->>API: token/hash validation
   API->>DB: query lead/payment details
   API-->>Ops: filtered lead/payment payload

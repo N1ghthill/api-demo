@@ -1,0 +1,645 @@
+openapi: 3.0.3
+info:
+  title: api-demo
+  version: 1.0.0
+  description: |
+    Portfolio backend API for enrollment and checkout flows.
+    Endpoints include course catalog, lead creation, internal lead lookup, and idempotent payments.
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+servers:
+  - url: http://localhost:3000
+    description: Local
+  - url: https://api-demo.example.com
+    description: Example production URL
+
+security: []
+
+tags:
+  - name: Health
+  - name: Courses
+  - name: Leads
+  - name: Payments
+
+paths:
+  /api/health:
+    get:
+      tags: [Health]
+      summary: Healthcheck
+      operationId: getHealth
+      responses:
+        '200':
+          description: API healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                required: [ok]
+        '403':
+          description: Forbidden by CORS
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /api/courses:
+    get:
+      tags: [Courses]
+      summary: List active courses
+      operationId: getCourses
+      responses:
+        '200':
+          description: Active courses
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  courses:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Course'
+                required: [courses]
+        '429':
+          description: Rate limited
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '500':
+          description: Internal failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /api/leads:
+    post:
+      tags: [Leads]
+      summary: Create enrollment lead
+      operationId: createLead
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LeadCreateRequest'
+      responses:
+        '200':
+          description: Lead created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeadCreateResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '429':
+          description: Rate limited
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '500':
+          description: Internal failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+    get:
+      tags: [Leads]
+      summary: Internal lead lookup
+      description: "Requires one of x-internal-token, x-matriculator-token, or Authorization: Bearer <token>."
+      operationId: getInternalLeads
+      security:
+        - InternalToken: []
+        - LegacyMatriculatorToken: []
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: lead_code
+          schema:
+            type: string
+          description: Lead code prefix (e.g. MAT-ABC123)
+        - in: query
+          name: payment_status
+          schema:
+            type: string
+            enum: [pending, processing, approved, pending_authentication, declined, provider_unavailable]
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+      responses:
+        '200':
+          description: Matching leads
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  count:
+                    type: integer
+                  leads:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/InternalLead'
+                required: [ok, count, leads]
+        '400':
+          description: Missing or invalid filter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '429':
+          description: Rate limited
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '500':
+          description: Internal failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /api/payments:
+    post:
+      tags: [Payments]
+      summary: Create card checkout with idempotency
+      operationId: createPayment
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: false
+          schema:
+            type: string
+            minLength: 8
+            maxLength: 120
+          description: Strongly recommended to avoid duplicate charges on retries.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentCreateRequest'
+      responses:
+        '200':
+          description: Checkout processed
+          headers:
+            Idempotency-Key:
+              description: Effective idempotency key used by the API.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '409':
+          description: Payment already in progress or idempotency conflict
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ApiError'
+                  - $ref: '#/components/schemas/PaymentInProgressError'
+        '429':
+          description: Rate limited
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '500':
+          description: Internal failure or provider misconfiguration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '502':
+          description: Provider unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentProviderUnavailableError'
+
+components:
+  securitySchemes:
+    InternalToken:
+      type: apiKey
+      in: header
+      name: x-internal-token
+    LegacyMatriculatorToken:
+      type: apiKey
+      in: header
+      name: x-matriculator-token
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+
+  schemas:
+    ApiError:
+      type: object
+      properties:
+        code:
+          type: string
+        error:
+          type: string
+        message:
+          type: string
+        requestId:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+          nullable: true
+      required: [code, error, message, requestId]
+
+    Course:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+        name:
+          type: string
+        price_cents:
+          type: integer
+        active:
+          type: boolean
+        track:
+          type: string
+          nullable: true
+        area:
+          type: string
+          nullable: true
+        workload_hours:
+          type: integer
+          nullable: true
+        modality:
+          type: string
+          nullable: true
+        duration_months_min:
+          type: integer
+          nullable: true
+        duration_months_max:
+          type: integer
+          nullable: true
+        tcc_required:
+          type: boolean
+          nullable: true
+      required: [id, slug, name, price_cents]
+
+    Address:
+      type: object
+      properties:
+        cep:
+          type: string
+          example: '30110000'
+        street:
+          type: string
+        number:
+          type: string
+        complement:
+          type: string
+        neighborhood:
+          type: string
+        city:
+          type: string
+        state:
+          type: string
+          example: MG
+
+    LeadRequirementsAck:
+      type: object
+      properties:
+        minimum_experience_two_years:
+          type: boolean
+        coren_active_two_years_auxiliar:
+          type: boolean
+        professional_link_proof:
+          type: boolean
+        professional_link_proof_type:
+          type: string
+          enum: [ctps, contrato_publico]
+
+    LeadCreateRequest:
+      type: object
+      properties:
+        course_slug:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+        cpf:
+          type: string
+        birth_date:
+          type: string
+          format: date
+        father_name:
+          type: string
+        mother_name:
+          type: string
+        address:
+          $ref: '#/components/schemas/Address'
+        experience_credit:
+          type: object
+          properties:
+            requested:
+              type: boolean
+            note:
+              type: string
+        course_requirements_ack:
+          $ref: '#/components/schemas/LeadRequirementsAck'
+        source_url:
+          type: string
+      required:
+        - course_slug
+        - name
+        - email
+        - phone
+        - cpf
+        - birth_date
+        - father_name
+        - mother_name
+        - address
+
+    LeadCreateResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        lead_id:
+          type: string
+          format: uuid
+        lead_code:
+          type: string
+      required: [ok, lead_id, lead_code]
+
+    InternalLead:
+      type: object
+      properties:
+        lead_id:
+          type: string
+          format: uuid
+        lead_code:
+          type: string
+        course_slug:
+          type: string
+        course_name:
+          type: string
+        customer_name:
+          type: string
+        customer_email:
+          type: string
+        customer_phone:
+          type: string
+        cpf:
+          type: string
+          nullable: true
+        birth_date:
+          type: string
+          nullable: true
+        father_name:
+          type: string
+        mother_name:
+          type: string
+        address:
+          type: object
+          additionalProperties: true
+        payment_status:
+          type: string
+        payment_reference:
+          type: string
+          nullable: true
+        payment_tid:
+          type: string
+          nullable: true
+        payment_return_code:
+          type: string
+          nullable: true
+        payment_return_message:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+        payment_updated_at:
+          type: string
+          nullable: true
+        paid_at:
+          type: string
+          nullable: true
+      required:
+        - lead_id
+        - lead_code
+        - course_slug
+        - course_name
+        - customer_name
+        - customer_email
+        - customer_phone
+        - address
+        - payment_status
+        - created_at
+
+    PaymentCustomer:
+      type: object
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+        cpf:
+          type: string
+      required: [name, email, phone]
+
+    PaymentCard:
+      type: object
+      properties:
+        holder_name:
+          type: string
+        number:
+          type: string
+        exp_month:
+          type: string
+        exp_year:
+          type: string
+        cvv:
+          type: string
+      required: [holder_name, number, exp_month, exp_year, cvv]
+
+    PaymentCreateRequest:
+      type: object
+      properties:
+        lead_id:
+          type: string
+          format: uuid
+        course_slug:
+          type: string
+        installments:
+          type: integer
+          minimum: 1
+          maximum: 12
+        customer:
+          $ref: '#/components/schemas/PaymentCustomer'
+        card:
+          $ref: '#/components/schemas/PaymentCard'
+        source_url:
+          type: string
+        idempotency_key:
+          type: string
+      required: [lead_id, course_slug, installments, customer, card]
+
+    PaymentResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        approved:
+          type: boolean
+        status:
+          type: string
+        checkout_id:
+          type: string
+          nullable: true
+        lead_id:
+          type: string
+          format: uuid
+        lead_code:
+          type: string
+        lead_already_paid:
+          type: boolean
+        reference:
+          type: string
+          nullable: true
+        tid:
+          type: string
+          nullable: true
+        authorization_code:
+          type: string
+          nullable: true
+        return_code:
+          type: string
+          nullable: true
+        return_message:
+          type: string
+          nullable: true
+        amount_cents:
+          type: integer
+        installments:
+          type: integer
+        requires_action:
+          type: boolean
+        redirect_url:
+          type: string
+          nullable: true
+        idempotency_key:
+          type: string
+        idempotent_reused:
+          type: boolean
+        idempotency_persisted:
+          type: boolean
+        provider_mode:
+          type: string
+          enum: [mock, rede]
+        customer:
+          type: object
+          properties:
+            name:
+              type: string
+            email:
+              type: string
+            phone:
+              type: string
+        lead:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            code:
+              type: string
+            city:
+              type: string
+              nullable: true
+            state:
+              type: string
+              nullable: true
+        course:
+          type: object
+          properties:
+            slug:
+              type: string
+            name:
+              type: string
+            price_cents:
+              type: integer
+      required:
+        - ok
+        - approved
+        - status
+        - lead_id
+        - lead_code
+        - amount_cents
+        - installments
+        - idempotency_key
+
+    PaymentInProgressError:
+      allOf:
+        - $ref: '#/components/schemas/ApiError'
+        - type: object
+          properties:
+            status:
+              type: string
+            reference:
+              type: string
+              nullable: true
+            tid:
+              type: string
+              nullable: true
+
+    PaymentProviderUnavailableError:
+      allOf:
+        - $ref: '#/components/schemas/ApiError'
+        - type: object
+          properties:
+            idempotency_key:
+              type: string
+            idempotency_persisted:
+              type: boolean
+            provider_mode:
+              type: string

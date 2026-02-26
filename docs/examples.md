@@ -80,5 +80,7 @@ Run the same request again with the same key to confirm `idempotent_reused: true
 
 ```bash
 curl -sS "http://localhost:3000/api/leads?payment_status=declined&limit=20" \
-  -H "x-matriculator-token: YOUR_INTERNAL_TOKEN"
+  -H "x-internal-token: YOUR_INTERNAL_TOKEN"
 ```
+
+Legacy header also accepted: `x-matriculator-token`.
