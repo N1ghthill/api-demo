@@ -1,0 +1,13 @@
+node_modules/
+.vercel/
+.env
+.env.local
+.env*.local
+
+# Local transpilation artifacts
+api/**/*.js
+api/**/*.js.map
+
+# Local smoke build output
+.smoke-build/
+.vercel

@@ -1,0 +1,40 @@
+name: "Feature request"
+description: Sugerir melhoria/funcionalidade
+labels: ["type: feature", "status: ready", "priority: medium"]
+title: "[FEATURE] "
+body:
+  - type: textarea
+    id: problema
+    attributes:
+      label: Problema/oportunidade
+      description: Qual dor real essa feature resolve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposta
+    attributes:
+      label: Proposta de solução
+      description: Descreva a solução esperada de forma objetiva.
+    validations:
+      required: true
+
+  - type: textarea
+    id: escopo
+    attributes:
+      label: Escopo inicial (MVP)
+      description: O que entra e o que fica fora neste primeiro ciclo.
+
+  - type: textarea
+    id: criterio
+    attributes:
+      label: Critérios de aceite
+      placeholder: |
+        - [ ] Critério 1
+        - [ ] Critério 2
+
+  - type: textarea
+    id: referencias
+    attributes:
+      label: Referências
+      description: Links, prints, exemplos, benchmarks.

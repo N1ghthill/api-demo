@@ -1,0 +1,52 @@
+name: "Bug report"
+description: Reportar falha/comportamento incorreto
+labels: ["type: bug", "status: ready", "priority: medium"]
+title: "[BUG] "
+body:
+  - type: textarea
+    id: resumo
+    attributes:
+      label: Resumo do problema
+      description: O que está falhando?
+      placeholder: Descreva em 2-3 linhas.
+    validations:
+      required: true
+
+  - type: textarea
+    id: passos
+    attributes:
+      label: Passos para reproduzir
+      description: Lista objetiva para reproduzir o erro.
+      placeholder: |
+        1. Ir para ...
+        2. Clicar em ...
+        3. Ver erro ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: esperado
+    attributes:
+      label: Comportamento esperado
+    validations:
+      required: true
+
+  - type: textarea
+    id: atual
+    attributes:
+      label: Comportamento atual
+    validations:
+      required: true
+
+  - type: input
+    id: ambiente
+    attributes:
+      label: Ambiente
+      description: SO, navegador/versão, Node, etc.
+      placeholder: Fedora 41, Chrome 131, Node 20
+
+  - type: textarea
+    id: evidencias
+    attributes:
+      label: Evidências
+      description: Logs, screenshots, links, stacktrace.
