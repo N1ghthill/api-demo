@@ -1,31 +1,44 @@
-# Enrollment API - Public Demo
+# api-demo
 
-Backend demo (Node.js + TypeScript + PostgreSQL + Vercel Functions) for an enrollment flow with:
-- course catalog,
-- lead capture,
-- card checkout,
-- idempotency protection,
-- internal lead lookup endpoint.
+API de demonstração para portfólio backend: fluxo completo de **catálogo -> lead -> checkout -> operação interna**, com foco em qualidade de produção.
 
-This repo is a **public-safe and sanitized** version of a real production architecture, prepared for technical portfolio and recruiter review.
+Resumo rápido (para recrutadores):
+- Stack: Node.js, TypeScript, PostgreSQL, Vercel Functions.
+- Escopo: endpoint público de cursos/leads/pagamentos + endpoint interno protegido.
+- Engenharia: idempotência de pagamento, validações fortes, fallback de schema, rate limit, headers de segurança, testes automatizados.
 
-## What this demonstrates
+## O que este projeto demonstra
 
-- Production-minded API design (validation, CORS, rate limit, security headers)
-- Payment checkout with idempotency and retry-safe behavior
-- Schema fallback strategy for rolling migrations
-- Clear separation between public endpoints and internal token-protected queries
-- Automated checks in CI (typecheck + tests)
+- Design de API orientado a operação real.
+- Evita cobrança duplicada com `Idempotency-Key`.
+- Persistência resiliente de tentativas de checkout.
+- Separação clara entre tráfego público e consulta interna autenticada.
+- Integração de pagamento desacoplada por modo (`mock` / `rede`).
 
-## Stack
+## Arquitetura
 
+- `api/health.ts`: healthcheck.
+- `api/courses.ts`: catálogo de cursos ativos.
+- `api/leads.ts`: criação e busca interna de leads com token/hash.
+- `api/payments.ts`: checkout com idempotência e atualização de status.
+- `lib/rede.ts`: gateway de pagamento (mock e e.Rede).
+- `db/init/*.sql`: schema, seeds e tabelas de checkout/idempotência.
+
+## Fluxo principal
+
+1. Frontend cria lead em `POST /api/leads`.
+2. Frontend inicia pagamento em `POST /api/payments` com `Idempotency-Key`.
+3. API registra checkout em `processing`, consulta provider e persiste resultado.
+4. Repetição com mesma chave retorna o mesmo resultado sem nova cobrança.
+5. Equipe interna consulta `GET /api/leads` com token seguro.
+
+Diagramas completos em `docs/flows.md`.
+
+## Como rodar localmente
+
+Pré-requisitos:
 - Node.js 20+
-- TypeScript
-- Express (local adapter) + Vercel serverless handlers
-- PostgreSQL
-- Optional real provider integration (`e.Rede`)
-
-## Quickstart
+- Docker + Docker Compose
 
 ```bash
 npm install
@@ -35,56 +48,47 @@ npm run db:setup
 npm run dev
 ```
 
-API base URL: `http://localhost:3000`
+Base URL local: `http://localhost:3000`
 
-## Payment modes
+## Modo de pagamento
 
-Set `PAYMENT_PROVIDER_MODE` in `.env.local`:
+No `.env.local`:
 
-- `mock` (default): deterministic fake gateway for demos.
-- `rede`: real e.Rede gateway (requires `REDE_*` vars).
+- `PAYMENT_PROVIDER_MODE=mock` (padrão para demo)
+- `PAYMENT_PROVIDER_MODE=rede` (integração real, exige `REDE_*`)
 
-### Mock card scenarios
+Cenários mock:
+- aprovado: cartão válido (ex: `5448280000000007`)
+- negado: final `0000` (ex: `5448280000070000`)
+- exige autenticação: final `1111` (ex: `5448280000011111`)
 
-- Approved: card ending with anything except below examples.
-- Declined: card ending with `0000`.
-- 3DS required: card ending with `1111`.
+## Documentação complementar
 
-Examples of valid numbers for demo:
-- `5448280000000007` -> approved
-- `5448280000070000` -> declined
-- `5448280000011111` -> pending authentication
+- `docs/case.md`: contexto e decisões de engenharia.
+- `docs/flows.md`: diagramas de sequência.
+- `docs/examples.md`: exemplos cURL ponta a ponta.
 
-## Endpoints
+## Qualidade e segurança
 
-- `GET /api/health`
-- `GET /api/courses`
-- `POST /api/leads`
-- `POST /api/payments`
-- `GET /api/leads` (internal lookup; requires token)
-
-## Documentation
-
-- Case summary: `docs/case.md`
-- Flow diagrams: `docs/flows.md`
-- API examples (cURL): `docs/examples.md`
-
-## Security notes
-
-- Keep `DATABASE_URL`, `REDE_TOKEN`, and internal tokens only in backend env.
-- Use `MATRICULADOR_TOKEN_SHA256` instead of plain token whenever possible.
-- In production, set explicit `FRONTEND_ALLOWED_ORIGINS`.
-
-## Local quality checks
+- Input validation de payload e campos críticos.
+- CORS controlado + allowlist de origens.
+- Rate limit por endpoint.
+- Headers de segurança e request-id.
+- Tokens internos com comparação segura e suporte a hash SHA-256.
+- Testes + typecheck:
 
 ```bash
 npm run check
 ```
 
-## Recruiter context
+## Pontos de avaliação técnica
 
-This project highlights practical backend decisions for real transaction pipelines:
-- anti-duplicate payment strategy,
-- resilient DB writes,
-- provider failure handling,
-- operational observability via structured checkout records.
+Se você estiver avaliando este repositório para vaga backend, os pontos principais estão em:
+- `api/payments.ts`: idempotência, tratamento de erro de provider e consistência de status.
+- `api/leads.ts`: autenticação de endpoint interno e normalização/validação de dados.
+- `lib/rede.ts`: estratégia de provider mockável para demo e testes.
+- `db/init/060_payment_idempotency.sql`: base SQL para prevenção de duplicidade.
+
+## Licença
+
+MIT (`LICENSE`).

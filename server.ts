@@ -33,5 +33,5 @@ app.use((_req: express.Request, res: express.Response) => {
 
 const port = Number(process.env.PORT || 3000);
 app.listen(port, () => {
-  console.log(`enrollment-api-public-demo listening on :${port}`);
+  console.log(`api-demo listening on :${port}`);
 });

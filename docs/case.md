@@ -1,29 +1,32 @@
-# Case Summary
+# Case Summary - api-demo
 
-## Context
+## Contexto
 
-The business needed a reliable enrollment backend to connect catalog -> lead -> payment -> internal follow-up.
+Este projeto foi estruturado para simular um backend de matrícula com checkout, priorizando padrões de produção: confiabilidade, segurança e observabilidade operacional.
 
-## Goals
+## Problema técnico
 
-- Prevent duplicate charges on retries.
-- Keep sensitive operations server-side only.
-- Provide internal lookup for operations team.
-- Support iterative schema rollout without downtime.
+Em fluxos de pagamento, retries de rede podem gerar duplicidade de cobrança e inconsistência de estado se a API não for idempotente e transacionalmente cuidadosa.
 
-## Solution Highlights
+## Objetivos de engenharia
 
-- Serverless API endpoints with strict input validation.
-- Idempotent checkout flow using request key + deterministic fallback reference.
-- Payment status lifecycle persisted in `payment_checkouts` and reflected in `lead_enrollments`.
-- Internal query endpoint protected by token/hash.
+- Garantir comportamento determinístico em retries.
+- Persistir trilha operacional de cada tentativa de checkout.
+- Isolar endpoint interno com autenticação robusta.
+- Suportar evolução de schema sem quebrar ambientes legados.
 
-## Engineering decisions
+## Decisões implementadas
 
-- Favor deterministic behavior for retries.
-- Keep provider integration encapsulated and swappable (`mock` / `rede`).
-- Add security baseline headers and per-route rate limits.
+- `Idempotency-Key` explícita + chave automática determinística.
+- Fallback por `reference` quando coluna idempotente ainda não existe.
+- Atualização de `payment_checkouts` e `lead_enrollments` em ciclo completo.
+- Provider desacoplado por modo (`mock` para demo, `rede` para real).
+- Comparação segura de token (`timingSafeEqual`) e suporte a hash SHA-256.
 
-## Portfolio value
+## Valor para portfólio
 
-This repository is designed to show practical backend ownership in production-like systems: reliability, security, and operational clarity.
+O repositório demonstra ownership de backend em fluxo sensível:
+- integridade de cobrança,
+- segurança de dados,
+- clareza para operação,
+- documentação executável para validação rápida.
