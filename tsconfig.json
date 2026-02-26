@@ -5,7 +5,8 @@
     "moduleResolution": "nodenext",
     "strict": true,
     "skipLibCheck": true,
-    "esModuleInterop": true
+    "esModuleInterop": true,
+    "types": ["node"]
   },
   "include": ["api/**/*.ts", "lib/**/*.ts", "tests/**/*.ts", "server.ts"]
 }
