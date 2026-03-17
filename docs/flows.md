@@ -1,6 +1,6 @@
-# Flow Diagrams
+# Diagramas de fluxo
 
-## 1) Enrollment + Payment
+## 1) Matrícula + pagamento
 
 ```mermaid
 sequenceDiagram
@@ -21,7 +21,7 @@ sequenceDiagram
   API-->>FE: normalized payment response
 ```
 
-## 2) Retry / Idempotency
+## 2) Retry / idempotência
 
 ```mermaid
 sequenceDiagram
@@ -39,7 +39,7 @@ sequenceDiagram
   end
 ```
 
-## 3) Internal Operations Lookup
+## 3) Consulta interna operacional
 
 ```mermaid
 sequenceDiagram

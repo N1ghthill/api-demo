@@ -18,7 +18,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Install dependencies
@@ -47,7 +47,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Install dependencies
@@ -56,7 +56,7 @@ jobs:
       - name: Build app
         run: npm run build
 
-      - name: Docker smoke test (db + api)
+      - name: Start Postgres and apply schema
         shell: bash
         run: |
           set -euo pipefail
@@ -69,10 +69,27 @@ jobs:
             sleep 1
           done
 
+          npm run db:apply
+
+      - name: Integration tests (db + api)
+        env:
+          DATABASE_URL: postgres://demo:demo@127.0.0.1:5432/enrollment_demo
+          MATRICULADOR_TOKEN: integration-token
+          PAYMENT_PROVIDER_MODE: mock
+        run: npm run test:integration
+
+      - name: Docker smoke test (db + api)
+        shell: bash
+        run: |
+          set -euo pipefail
           DATABASE_URL=postgres://demo:demo@127.0.0.1:5432/enrollment_demo PORT=3005 node dist/server.js >/tmp/api-demo.log 2>&1 &
           APP_PID=$!
-          trap 'kill $APP_PID 2>/dev/null || true; docker compose down -v' EXIT
+          trap 'kill $APP_PID 2>/dev/null || true' EXIT
 
           sleep 2
           curl -fsS http://127.0.0.1:3005/api/health | grep -q '"ok":true'
           curl -fsS http://127.0.0.1:3005/api/courses | grep -q '"courses"'
+
+      - name: Stop docker services
+        if: always()
+        run: docker compose down -v

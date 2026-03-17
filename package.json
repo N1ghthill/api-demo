@@ -2,13 +2,19 @@
   "name": "api-demo",
   "private": false,
   "type": "module",
+  "packageManager": "npm@10.8.2",
+  "engines": {
+    "node": ">=20.19.0 <21 || >=22.12.0",
+    "npm": ">=10"
+  },
   "scripts": {
     "dev": "tsx watch server.ts",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings=0",
-    "test": "find tests -name '*.test.ts' -print0 | xargs -0 node --import tsx --test",
+    "test": "find tests -name '*.test.ts' ! -name '*.integration.test.ts' -print0 | xargs -0 node --import tsx --test",
+    "test:integration": "find tests -name '*.integration.test.ts' -print0 | xargs -0 node --import tsx --test",
     "check": "npm run typecheck && npm run test",
     "docs:openapi": "redocly lint docs/openapi.yaml",
     "db:setup": "bash scripts/db-setup.sh",

@@ -29,20 +29,22 @@ function getAllowedOrigins(): string[] {
       ? parseOriginList(process.env.FRONTEND_BASE_URL)
       : [];
 
+  if (isProduction()) {
+    return Array.from(new Set(configured));
+  }
+
   const defaults = parseOriginList(DEFAULT_FRONTEND_BASE_URL);
 
-  const extras = isProduction()
-    ? []
-    : [
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://localhost:8080",
-        "http://localhost:5500",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:8080",
-        "http://127.0.0.1:5500"
-      ].map(normalizeOrigin);
+  const extras = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://localhost:8080",
+    "http://localhost:5500",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:8080",
+    "http://127.0.0.1:5500"
+  ].map(normalizeOrigin);
 
   return Array.from(new Set([...configured, ...defaults, ...extras]));
 }

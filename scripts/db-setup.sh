@@ -4,6 +4,14 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+source "$ROOT_DIR/scripts/load-env.sh" "$ROOT_DIR"
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "docker is required for db:setup."
+  echo "Use npm run db:apply with DATABASE_URL + psql for a non-Docker flow."
+  exit 1
+fi
+
 echo "Starting Postgres (docker compose)..."
 docker compose up -d db
 

@@ -1,20 +1,20 @@
-# API Examples (cURL)
+# Exemplos da API (cURL)
 
-Assuming local API at `http://localhost:3000`.
+Assumindo a API local em `http://localhost:3000`.
 
-## Health
+## Healthcheck
 
 ```bash
 curl -sS http://localhost:3000/api/health
 ```
 
-## List courses
+## Listar cursos
 
 ```bash
 curl -sS http://localhost:3000/api/courses
 ```
 
-## Create lead
+## Criar lead
 
 ```bash
 curl -sS -X POST http://localhost:3000/api/leads \
@@ -45,9 +45,9 @@ curl -sS -X POST http://localhost:3000/api/leads \
   }'
 ```
 
-## Create payment (idempotent)
+## Criar pagamento (idempotente)
 
-Replace `<LEAD_ID>` with the previous response value.
+Substitua `<LEAD_ID>` pelo valor retornado na resposta anterior.
 
 ```bash
 curl -sS -X POST http://localhost:3000/api/payments \
@@ -74,13 +74,13 @@ curl -sS -X POST http://localhost:3000/api/payments \
   }'
 ```
 
-Run the same request again with the same key to confirm `idempotent_reused: true`.
+Repita a mesma requisição com a mesma chave para confirmar `idempotent_reused: true`.
 
-## Internal lead lookup
+## Consulta interna de leads
 
 ```bash
 curl -sS "http://localhost:3000/api/leads?payment_status=declined&limit=20" \
   -H "x-internal-token: YOUR_INTERNAL_TOKEN"
 ```
 
-Legacy header also accepted: `x-matriculator-token`.
+O header legado `x-matriculator-token` também é aceito.

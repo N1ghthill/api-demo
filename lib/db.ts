@@ -1,13 +1,25 @@
 import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from "pg";
 import { env } from "./env.js";
 
-const connectionString = env("DATABASE_URL");
-const useSupabaseSsl = /supabase\.co|supabase\.com/i.test(connectionString);
+let pool: Pool | null = null;
 
-const pool = new Pool({
-  connectionString,
-  ...(useSupabaseSsl ? { ssl: { rejectUnauthorized: false } } : {})
-});
+function createPool(): Pool {
+  const connectionString = env("DATABASE_URL");
+  const useSupabaseSsl = /supabase\.co|supabase\.com/i.test(connectionString);
+
+  return new Pool({
+    connectionString,
+    ...(useSupabaseSsl ? { ssl: { rejectUnauthorized: false } } : {})
+  });
+}
+
+function getPool(): Pool {
+  if (!pool) {
+    pool = createPool();
+  }
+
+  return pool;
+}
 
 export type DbClient = PoolClient;
 
@@ -15,11 +27,11 @@ export function query<T extends QueryResultRow = QueryResultRow>(
   text: string,
   params?: any[]
 ): Promise<QueryResult<T>> {
-  return pool.query<T>(text, params);
+  return getPool().query<T>(text, params);
 }
 
 export async function withClient<T>(fn: (client: DbClient) => Promise<T>): Promise<T> {
-  const client = await pool.connect();
+  const client = await getPool().connect();
   try {
     return await fn(client);
   } finally {
@@ -43,4 +55,12 @@ export async function withTransaction<T>(fn: (client: DbClient) => Promise<T>): 
       throw error;
     }
   });
+}
+
+export async function closePool(): Promise<void> {
+  if (!pool) return;
+
+  const currentPool = pool;
+  pool = null;
+  await currentPool.end();
 }

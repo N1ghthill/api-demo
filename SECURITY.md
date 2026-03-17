@@ -1,27 +1,27 @@
-# Security Policy
+# Política de segurança
 
-## Supported Versions
+## Versões suportadas
 
-Security fixes are applied to the `main` branch.
+Correções de segurança são aplicadas na branch `main`.
 
-## Reporting a Vulnerability
+## Como reportar uma vulnerabilidade
 
-Please do not open public issues for security vulnerabilities.
+Não abra issue pública para vulnerabilidades de segurança.
 
-Report privately via GitHub Security Advisories:
-1. Open the repository Security tab.
-2. Click "Report a vulnerability".
-3. Include reproduction details, impact, and suggested remediation if available.
+Reporte de forma privada via GitHub Security Advisories:
+1. Abra a aba `Security` do repositório.
+2. Clique em `Report a vulnerability`.
+3. Inclua cenário de reprodução, impacto e remediação sugerida, se houver.
 
-Expected response times:
-- Acknowledgement: within 72 hours
-- Initial triage: within 7 days
-- Fix timeline: based on severity and exploitability
+Tempos esperados de resposta:
+- Confirmação de recebimento: até 72 horas
+- Triagem inicial: até 7 dias
+- Prazo de correção: conforme severidade e explorabilidade
 
-## Scope
+## Escopo
 
-This policy covers:
-- API authentication and authorization
-- Sensitive data handling
-- Payment flow integrity and idempotency
-- Dependency vulnerabilities
+Esta política cobre:
+- autenticação e autorização da API;
+- tratamento de dados sensíveis;
+- integridade do fluxo de pagamento e idempotência;
+- vulnerabilidades de dependências.

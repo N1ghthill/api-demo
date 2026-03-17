@@ -2,50 +2,92 @@
 
 [![CI](https://github.com/N1ghthill/api-demo/actions/workflows/ci.yml/badge.svg)](https://github.com/N1ghthill/api-demo/actions/workflows/ci.yml)
 
-API de demonstração para portfólio backend com fluxo completo de matrícula:
-`catálogo -> lead -> checkout -> operação interna`.
+API de portfólio para simular um backend de matrícula com fluxo completo de checkout:
+`catálogo -> lead -> pagamento -> operação interna`.
+
+O objetivo deste repositório não é mostrar volume de código. É mostrar critérios de engenharia em um fluxo sensível: idempotência, tratamento de falha operacional, segurança de dados, documentação útil e validação automatizada.
+
+## O que vale observar aqui
+
+- `Idempotency-Key` em `POST /api/payments`
+- persistência operacional de checkout sem expor dados sensíveis
+- separação entre erro de negócio e indisponibilidade do provider
+- endpoint interno autenticado para operação
+- contrato OpenAPI utilizável sem abrir o código
+- CI com lint, build, testes e integração com Postgres
+
+## Arquitetura resumida
+
+Fluxo principal:
+
+```text
+GET /api/courses
+        -> catálogo
+
+POST /api/leads
+        -> valida payload
+        -> persiste lead
+        -> gera lead_code
+
+POST /api/payments
+        -> valida idempotência
+        -> cria checkout
+        -> chama provider (mock/rede)
+        -> persiste estado operacional
+        -> atualiza lead
+
+GET /api/leads
+        -> rota interna autenticada
+        -> consulta operação por lead_code
+```
+
+Arquivos centrais para leitura:
+
+- `api/payments.ts`
+- `api/leads.ts`
+- `lib/apiHandler.ts`
+- `lib/paymentsDomain.ts`
+- `lib/paymentsStore.ts`
+- `lib/leadsDomain.ts`
+- `docs/openapi.yaml`
 
 ## Stack
 
 - Node.js + TypeScript
-- Express (adapter local) + handlers compatíveis com Vercel
+- Express com handlers compatíveis com Vercel
 - PostgreSQL
-- Pagamento com modo `mock` (padrão) e `rede` (real)
-- Logs estruturados com `pino`
-
-## O que este projeto demonstra
-
-- Idempotência de pagamentos (`Idempotency-Key`)
-- Tratamento resiliente de schema/migrations
-- Validações reutilizáveis (email, telefone, UF, CPF)
-- Rate limit com fallback em memória e suporte opcional a Redis
-- Erros padronizados: `{ code, message, details?, requestId }`
-- Contrato OpenAPI completo em `docs/openapi.yaml`
+- `pino` para logs estruturados
+- provider de pagamento em dois modos:
+- `mock` para demonstração local
+- `rede` para integração real
 
 ## Endpoints
 
 - `GET /api/health`
 - `GET /api/courses`
 - `POST /api/leads`
-- `GET /api/leads` (interno, exige token)
+- `GET /api/leads` interno, protegido por token
 - `POST /api/payments`
 
-## Execução local (sem Docker)
+## Avaliação rápida para recrutadores
+
+Se a ideia for avaliar o projeto em poucos minutos, este é o caminho mais direto:
+
+1. Ler [docs/case.md](docs/case.md) para entender o problema técnico e as decisões.
+2. Ler [docs/portfolio-checklist.md](docs/portfolio-checklist.md) para validar o repositório sem tentativa e erro.
+3. Abrir [docs/openapi.yaml](docs/openapi.yaml) para ver o contrato HTTP.
+4. Conferir [api/payments.ts](api/payments.ts) e [lib/paymentsStore.ts](lib/paymentsStore.ts) para o fluxo mais sensível.
+
+## Execução local
 
 Pré-requisitos:
-- Node.js 20+
-- PostgreSQL rodando e acessível
 
-```bash
-npm ci
-cp .env.example .env.local
-npm run db:apply   # se estiver usando banco já disponível
-npm run dev
-```
+- Node.js `20.20.0` ou compatível com [.nvmrc](.nvmrc) e `package.json > engines`
+- npm `10+`
+- PostgreSQL acessível
+- `psql` instalado se você quiser aplicar migrations fora do Docker
 
-API local: `http://localhost:3000`
-
-## Execução local com Docker (Postgres)
+### Com Docker
 
 ```bash
 npm ci
@@ -55,79 +97,94 @@ npm run db:setup
 npm run dev
 ```
 
-## Build de produção
+### Sem Docker
 
 ```bash
-npm run build
-npm start
+npm ci
+cp .env.example .env.local
+npm run db:apply
+npm run dev
 ```
 
-- `npm run build` gera saída em `dist/`
-- `npm start` executa `node dist/server.js`
+`npm run db:apply` funciona de dois jeitos:
 
-## Qualidade e checks
+- usando o container `db` do `docker compose`, se ele estiver rodando
+- usando `DATABASE_URL` + `psql`, se você já tiver um Postgres fora do Docker
+
+API local: `http://localhost:3000`
+
+## Qualidade e validação
+
+Validação estática:
 
 ```bash
 npm run lint
+npm run build
 npm run check
-```
-
-`npm run check` executa typecheck + testes.
-No GitHub Actions, o workflow CI também executa smoke test com Docker (`db + API`).
-
-## OpenAPI
-
-Contrato em `docs/openapi.yaml`.
-
-Validar contrato:
-
-```bash
 npm run docs:openapi
 ```
 
-Headers importantes documentados:
-- `Idempotency-Key` em `POST /api/payments`
-- `x-internal-token` (ou `x-matriculator-token`) em `GET /api/leads`
+Integração com banco:
 
-## Rate limit com Redis (opcional)
-
-Por padrão, o rate-limit usa memória local.
-
-Para habilitar Redis:
-
-```env
-REDIS_URL=redis://localhost:6379
+```bash
+docker compose up -d db
+npm run db:setup
+DATABASE_URL=postgres://demo:demo@127.0.0.1:5432/enrollment_demo \
+MATRICULADOR_TOKEN=integration-token \
+PAYMENT_PROVIDER_MODE=mock \
+npm run test:integration
 ```
 
-Se `REDIS_URL` estiver ausente ou indisponível, a API faz fallback automático para memória.
+O teste de integração cobre:
 
-## Pagamento: modos disponíveis
+- criação de lead
+- pagamento aprovado em modo `mock`
+- reuso por `Idempotency-Key`
+- consulta interna autenticada
+- envelope padronizado para rota inexistente
+
+## Segurança e comportamento operacional
+
+- `X-Request-Id` em todas as respostas
+- erros padronizados no formato `{ code, error, message, requestId, details? }`
+- CORS restritivo em produção
+- logs com redaction de `cardNumber`, `cvv`, `Authorization` e tokens internos
+- `provider_response` persistido com sanitização
+- falha operacional do provider é tratada como indisponibilidade, não como recusa de negócio
+- inicialização da aplicação desacoplada do banco para rotas não dependentes de DB
+
+## Modos de pagamento
 
 No `.env.local`:
 
-- `PAYMENT_PROVIDER_MODE=mock` (padrão para demo)
-- `PAYMENT_PROVIDER_MODE=rede` (integração real, exige `REDE_*`)
+- `PAYMENT_PROVIDER_MODE=mock`
+- `PAYMENT_PROVIDER_MODE=rede`
 
-Exemplos mock:
+Cartões de exemplo no modo `mock`:
+
 - aprovado: `5448280000000007`
 - negado: `5448280000070000`
 - requer autenticação: `5448280000011111`
 
-## Observabilidade e segurança
+## Documentação adicional
 
-- `X-Request-Id` em todas as respostas
-- logs estruturados sem exposição de `cardNumber`, `cvv`, `Authorization` e tokens internos
-- `provider_response` persistido com whitelist/sanitização de campos
+- [docs/case.md](docs/case.md)
+- [docs/flows.md](docs/flows.md)
+- [docs/examples.md](docs/examples.md)
+- [docs/HARDENING_REPORT.md](docs/HARDENING_REPORT.md)
+- [docs/portfolio-checklist.md](docs/portfolio-checklist.md)
 
-## Arquivos-chave para avaliação técnica
+## Escopo e trade-offs
 
-- `api/payments.ts`
-- `api/leads.ts`
-- `lib/apiHandler.ts`
-- `lib/rateLimit.ts`
-- `lib/validators.ts`
-- `docs/openapi.yaml`
+Este repositório é uma demonstração técnica. A intenção foi priorizar:
+
+- clareza de contrato
+- comportamento confiável no fluxo sensível
+- documentação executável
+- legibilidade para revisão técnica
+
+Ele não tenta cobrir tudo que existiria em um produto real, como autenticação de usuários finais, filas assíncronas, observabilidade externa ou infraestrutura completa de produção.
 
 ## Licença
 
-MIT (`LICENSE`)
+MIT ([LICENSE](LICENSE))
