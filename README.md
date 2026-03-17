@@ -57,9 +57,7 @@ Arquivos centrais para leitura:
 - Express com handlers compatíveis com Vercel
 - PostgreSQL
 - `pino` para logs estruturados
-- provider de pagamento em dois modos:
-- `mock` para demonstração local
-- `rede` para integração real
+- provider de pagamento com modo `mock` para demonstração local e `rede` para integração real
 
 ## Endpoints
 
